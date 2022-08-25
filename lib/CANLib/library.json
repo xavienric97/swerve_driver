@@ -1,0 +1,19 @@
+  
+{
+    "name":"CANLib",
+    "keywords":"CAN, bus, automotive",
+    "description":"Easy to use eXoCAN supports polling/interrupts, single wire and CAN bus xcvrs, 16/32b filters, STD/Extended IDs, listen only",
+    "repository": {
+        "type":"git",
+        "url":"https://github.com/octavio2895/CANLib.git"
+    },
+    "version":"1.0.3",
+    "authors":
+    {
+        "name": "Octavio Echeverria",
+        "url": "https://github.com/octavio2895",
+        "maintainer": true
+    },
+    "frameworks":"arduino",
+    "platforms":"ststm32"
+}

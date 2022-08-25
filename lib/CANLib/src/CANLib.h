@@ -3,6 +3,21 @@
 #include <Arduino.h>
 #include <assert.h>
 
+#define CAN_STM32_ERROR_UNSUPPORTED_BIT_RATE     1000
+#define CAN_STM32_ERROR_MSR_INAK_NOT_SET         1001
+#define CAN_STM32_ERROR_MSR_INAK_NOT_CLEARED     1002
+#define CAN_STM32_ERROR_UNSUPPORTED_FRAME_FORMAT 1003
+
+
+#define MMIO32(x) (*(volatile uint32_t *)(x))
+#define MMIO16(x) (*(volatile uint16_t *)(x))
+#define MMIO8(x) (*(volatile uint8_t *)(x))
+
+#define INRQ mcr, 0
+#define INAK msr, 0
+#define FINIT fmr, 0
+#define fmpie0 1 // rx interrupt enable on rx msg pending bit
+
 /* Symbolic names for bit rate of CAN message                                */
 typedef enum {CAN_50KBPS, CAN_100KBPS, CAN_125KBPS, CAN_250KBPS, CAN_500KBPS, CAN_1000KBPS} BITRATE;
 
@@ -34,10 +49,14 @@ typedef struct
     uint8_t resynchronization_jump_width;        /// [1 to 4] (recommended value is 1)
 } CAN_bit_timing_config_t;
 
-#define CAN_STM32_ERROR_UNSUPPORTED_BIT_RATE     1000
-#define CAN_STM32_ERROR_MSR_INAK_NOT_SET         1001
-#define CAN_STM32_ERROR_MSR_INAK_NOT_CLEARED     1002
-#define CAN_STM32_ERROR_UNSUPPORTED_FRAME_FORMAT 1003
+
+
+enum idtype : bool
+{
+  STD_ID_LEN,
+  EXT_ID_LEN
+};
+
 
 
 
@@ -56,4 +75,13 @@ void CANReceive(CAN_msg_t* CAN_rx_msg);
 void CANSend(CAN_msg_t* CAN_tx_msg);
 uint8_t CANMsgAvail(void);
 
-
+void CANenableInterrupt();
+void CANdisableInterrupt();
+void CANfilterMask16Init(int bank, int idA, int maskA, int idB, int maskB);
+void CANfilterList16Init(int bank, int idA, int idB, int idC, int idD);
+void CANfilter16Init(int bank, int mode, int a, int b, int c, int d);
+void CANfilterList32Init(int bank, u_int32_t idA, u_int32_t idB);
+void CANfilterMask32Init(int bank, u_int32_t id, u_int32_t mask);
+void CANfilter32Init(int bank, int mode, u_int32_t a, u_int32_t b);
+int CANrx(volatile int &id, volatile int &fltrIdx, volatile uint8_t pData[]);
+void CANattachInterrupt(void func());

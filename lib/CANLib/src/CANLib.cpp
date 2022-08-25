@@ -1,9 +1,12 @@
 #include <CANLib.h>
+#include <CANReg.h> 
 /*
  * Calculation of bit timing dependent on peripheral clock rate
  */
 
 uint32_t SPEEDS[6] = {50*1000, 100*1000, 125*1000, 250*1000, 500*1000, 1000*1000};
+idtype _extIDs = STD_ID_LEN;
+idtype _rxExtended;
 
 int16_t ComputeCANTimings(const uint32_t peripheral_clock_rate,
                           const uint32_t target_bitrate,
@@ -22,6 +25,7 @@ int16_t ComputeCANTimings(const uint32_t peripheral_clock_rate,
      */
     static const uint8_t MaxBS1 = 16;
     static const uint8_t MaxBS2 = 8;
+    
 
     /*
      * Ref. "Automatic Baudrate Detection in CANopen Networks", U. Koppe, MicroControl GmbH & Co. KG
@@ -469,4 +473,104 @@ uint8_t CANMsgAvail(void)
 
 
 
+void CANattachInterrupt(void func()) // copy IRQ table to SRAM, point VTOR reg to it, set IRQ addr to user ISR
+{
+    static uint8_t newTbl[0xF0] __attribute__((aligned(0x100)));
+    uint8_t *pNewTbl = newTbl;
+    int origTbl = MMIO32(vtor);
+    for (int j = 0; j < 0x3c; j++) // table length = 60 integers
+        MMIO32((pNewTbl + (j << 2))) = MMIO32((origTbl + (j << 2)));
 
+    uint32_t canVectTblAdr = reinterpret_cast<uint32_t>(pNewTbl) + (36 << 2); // calc new ISR addr in new vector tbl
+    MMIO32(canVectTblAdr) = reinterpret_cast<uint32_t>(func);                 // set new CAN/USB ISR jump addr into new table
+    MMIO32(vtor) = reinterpret_cast<uint32_t>(pNewTbl);                       // load vtor register with new tbl location
+    CANenableInterrupt();
+}
+
+
+static inline volatile uint32_t &periphBit(uint32_t addr, int bitNum) // peripheral bit tool
+{
+  return MMIO32(0x42000000 + ((addr & 0xFFFFF) << 5) + (bitNum << 2)); // uses bit band memory
+}
+
+void CANenableInterrupt()
+{
+    periphBit(ier, fmpie0) = 1U; // set fifo RX int enable request
+    MMIO32(iser) = 1UL << 20;
+}
+
+void CANdisableInterrupt()
+{
+    periphBit(ier, fmpie0) = 0U;
+    MMIO32(iser) = 1UL << 20;
+}
+
+void CANfilterMask16Init(int bank, int idA, int maskA, int idB, int maskB) // 16b mask filters
+{
+    CANfilter16Init(bank, 0, idA, maskA, idB, maskB); // fltr 1,2 of flt bank n
+}
+
+void CANfilterList16Init(int bank, int idA, int idB, int idC, int idD) // 16b list filters
+{
+    CANfilter16Init(bank, 1, idA, idB, idC, idD); // fltr 1,2,3,4 of flt bank n
+}
+
+void CANfilter16Init(int bank, int mode, int a, int b, int c, int d) // 16b filters
+{
+    periphBit(FINIT) = 1;                            // FINIT  'init' filter mode ]
+    periphBit(fa1r, bank) = 0;                       // de-activate filter 'bank'
+    periphBit(fs1r, bank) = 0;                       // fsc filter scale reg,  0 => 2ea. 16b
+    periphBit(fm1r, bank) = mode;                    // fbm list mode = 1, 0 = mask
+    MMIO32(fr1 + (8 * bank)) = (b << 21) | (a << 5); // fltr1,2 of flt bank n  OR  flt/mask 1 in mask mode
+    MMIO32(fr2 + (8 * bank)) = (d << 21) | (c << 5); // fltr3,4 of flt bank n  OR  flt/mask 2 in mask mode
+    periphBit(fa1r, bank) = 1;                       // activate this filter ]
+    periphBit(FINIT) = 0;                            // ~FINIT  'active' filter mode ]
+}
+
+void CANfilterList32Init(int bank, u_int32_t idA, u_int32_t idB) //32b filters
+{
+     CANfilter32Init(bank, 1, idA, idB);
+   // filter32Init(0, 1, 0x00232461, 0x00232461);
+}
+
+void CANfilterMask32Init(int bank, u_int32_t id, u_int32_t mask) //32b filters
+{
+    CANfilter32Init(bank, 0, id, mask);
+}
+
+void CANfilter32Init(int bank, int mode, u_int32_t a, u_int32_t b) //32b filters
+{
+    periphBit(FINIT) = 1;                   // FINIT  'init' filter mode 
+    periphBit(fa1r, bank) = 0;              // de-activate filter 'bank'
+    periphBit(fs1r, bank) = 1;              // fsc filter scale reg,  0 => 2ea. 16b,  1=>32b
+    periphBit(fm1r, bank) = mode;           // fbm list mode = 1, 0 = mask
+    MMIO32(fr1 + (8 * bank)) = (a << 3) | 4; // the RXID/MASK to match 
+    MMIO32(fr2 + (8 * bank)) = (b << 3) | 4; // must replace a mask of zeros so that everything isn't passed
+    periphBit(fa1r, bank) = 1;              // activate this filter 
+    periphBit(FINIT) = 0;                   // ~FINIT  'active' filter mode 
+}
+
+int CANrx(volatile int &id, volatile int &fltrIdx, volatile uint8_t pData[])
+{
+    int len = -1;
+
+    // rxMsgCnt = MMIO32(rf0r) & (3 << 0); //num of msgs
+    // rxFull = MMIO32(rf0r) & (1 << 3);
+    // rxOverflow = MMIO32(rf0r) & (1 << 4); // b4
+
+    if (MMIO32(rf0r) & (3 << 0)) // num of msgs pending
+    {
+        _rxExtended = static_cast<idtype>((MMIO32(ri0r) & 1 << 2) >> 2);
+
+        if (_rxExtended)
+            id = (MMIO32(ri0r) >> 3); // extended id
+        else
+            id = (MMIO32(ri0r) >> 21);          // std id
+        len = MMIO32(rdt0r) & 0x0F;             // fifo data len and time stamp
+        fltrIdx = (MMIO32(rdt0r) >> 8) & 0xff;  // filter match index. Index accumalates from start of bank
+        ((uint32_t *)pData)[0] = MMIO32(rdl0r); // 4 low rx bytes
+        ((uint32_t *)pData)[1] = MMIO32(rdh0r); // another 4 bytes
+        periphBit(rf0r, 5) = 1;                 // release the mailbox
+    }
+    return len;
+}

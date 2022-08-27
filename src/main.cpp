@@ -12,6 +12,7 @@ HardwareSerial Serial2(PA3, PA2);
 #define CAN_UPDATE_PERIOD 100 // 10 Hz
 #define UPDATE_SENSORS_PERIOD 100
 #define BLINK_PERIOD 500
+#define TIMEOUT_PERIOD 1000
 #define DEV_ID 54 // TODO change to UUID hash
 #define FW_VERSION_MAJOR 1
 #define FW_VERSION_MINOR 0
@@ -49,6 +50,7 @@ typedef struct
   double  rpm_motor;
   double  pos_motor;
   double  displacement_motor;
+  uint32_t timeout;
 } SysState;
 
 SysState sys_state;
@@ -93,6 +95,13 @@ void blink();
 void process_short_buffer(uint8_t* data);
 void send_fw_packets();
 
+void set_duty(float duty);
+void set_current_off_delay(float current_off);
+void set_current(float current);
+void set_brake_current(float brake_current);
+void set_pid_speed(float speed);
+void set_pid_pos(float pos);
+void timeout_reset();
 
 void position_correction(double Current_Angle);
 void velocity_control(double Current_Angle);
@@ -154,72 +163,6 @@ void loop()
     blink();
   }
 
-
-  // CAN_TX_msg.data[0] = 0x00;
-  // CAN_TX_msg.data[1] = 0x01;
-  // CAN_TX_msg.data[2] = 0x02;
-  // CAN_TX_msg.data[3] = 0x03;
-  // CAN_TX_msg.data[4] = 0x04;
-  // CAN_TX_msg.data[5] = 0x05;
-  // CAN_TX_msg.data[6] = 0x06;
-  // CAN_TX_msg.data[7] = 0x07;
-  // CAN_TX_msg.len = frameLength;
-
-  // unsigned long currentMillis = millis();
-  // if (currentMillis - previousMillis >= interval) {
-  //   digitalWrite(PC13, LOW);
-  //   previousMillis = currentMillis;
-  //   if ( ( counter % 2) == 0) {
-  //     CAN_TX_msg.type = DATA_FRAME;
-  //     if (CAN_TX_msg.len == 0) CAN_TX_msg.type = REMOTE_FRAME;
-  //     CAN_TX_msg.format = EXTENDED_FORMAT;
-  //     CAN_TX_msg.id = 0x32F103;
-  //   } else {
-  //     CAN_TX_msg.type = DATA_FRAME;
-  //     if (CAN_TX_msg.len == 0) CAN_TX_msg.type = REMOTE_FRAME;
-  //     CAN_TX_msg.format = STANDARD_FORMAT;
-  //     CAN_TX_msg.id = 0x103;
-  //   }
-  //   CANSend(&CAN_TX_msg);
-  //   frameLength++;
-  //   if (frameLength == 9) frameLength = 0;
-  //   counter++;
-  // }
-  
-  // if(CANMsgAvail()) {
-  //   CANReceive(&CAN_RX_msg);
-
-  //   if (CAN_RX_msg.format == EXTENDED_FORMAT) {
-  //     Serial.print("Extended ID: 0x");
-  //     if (CAN_RX_msg.id < 0x10000000) Serial.print("0");
-  //     if (CAN_RX_msg.id < 0x1000000) Serial.print("00");
-  //     if (CAN_RX_msg.id < 0x100000) Serial.print("000");
-  //     if (CAN_RX_msg.id < 0x10000) Serial.print("0000");
-  //     Serial.print(CAN_RX_msg.id, HEX);
-  //   } else {
-  //     Serial.print("Standard ID: 0x");
-  //     if (CAN_RX_msg.id < 0x100) Serial.print("0");
-  //     if (CAN_RX_msg.id < 0x10) Serial.print("00");
-  //     Serial.print(CAN_RX_msg.id, HEX);
-  //     Serial.print("     ");
-  //   }
-
-  //   Serial.print(" DLC: ");
-  //   Serial.print(CAN_RX_msg.len);
-  //   if (CAN_RX_msg.type == DATA_FRAME) {
-  //     Serial.print(" Data: ");
-  //     for(int i=0; i<CAN_RX_msg.len; i++) {
-  //       Serial.print("0x"); 
-  //       Serial.print(CAN_RX_msg.data[i], HEX); 
-  //       if (i != (CAN_RX_msg.len-1))  Serial.print(" ");
-  //     }
-  //     Serial.println();
-  //   } else {
-  //     Serial.println(" Data: REMOTE REQUEST FRAME");
-  //   }
-  // }
-  
-
 }
 
 void blink()
@@ -238,36 +181,98 @@ void canISR() // get CAN bus frame passed by a filter into fifo0
 
 void read_can_data()
 {
-  Serial2.println("Got CAN packet!");
+  // Serial2.println("Got CAN packet!");
   uint32_t packet_type = (0xFF00 & CAN_RX_msg.id)>>8;
+  int32_t ind = 0;
+  int len = CAN_RX_msg.len;
   
   switch (packet_type)
   {
+
+    case CAN_PACKET_SET_DUTY:
+			ind = 0;
+			set_duty(bldc_buffer_get_float32(CAN_RX_msg.data, 1e5, &ind));
+			timeout_reset();
+			break;
+
+		case CAN_PACKET_SET_CURRENT:
+			ind = 0;
+			if (len >= 6) {
+				set_current_off_delay(bldc_buffer_get_float16(CAN_RX_msg.data, 1e3, &ind));
+			}
+
+			set_current(bldc_buffer_get_float32(CAN_RX_msg.data, 1e3, &ind));
+
+			timeout_reset();
+			break;
+
+		case CAN_PACKET_SET_CURRENT_BRAKE:
+			ind = 0;
+			set_brake_current(bldc_buffer_get_float32(CAN_RX_msg.data, 1e3, &ind));
+			timeout_reset();
+			break;
+
+		case CAN_PACKET_SET_RPM:
+			ind = 0;
+			set_pid_speed(bldc_buffer_get_float32(CAN_RX_msg.data, 1e0, &ind));
+			timeout_reset();
+			break;
+
+		case CAN_PACKET_SET_POS:
+			ind = 0;
+			set_pid_pos(bldc_buffer_get_float32(CAN_RX_msg.data, 1e6, &ind));
+			timeout_reset();
+			break;
+
     case CAN_PACKET_PROCESS_SHORT_BUFFER:
-      Serial2.println("Got CAN_PACKET_PROCESS_SHORT_BUFFER");
+      // Serial2.println("Got CAN_PACKET_PROCESS_SHORT_BUFFER");
       process_short_buffer(CAN_RX_msg.data);
       break;
   }
 
 }
 
+void set_duty(float duty)
+{
+  sys_state.displacement_motor = duty;
+}
+void set_current_off_delay(float current_off)
+{
+  return; //Not implemented
+}
+void set_current(float current)
+{
+  return; //Not implemented
+}
+void set_brake_current(float brake_current)
+{
+  return; //Not implemented
+}
+void set_pid_speed(float speed)
+{
+  sys_state.rpm_motor = speed;
+}
+void set_pid_pos(float pos)
+{
+  sys_state.pos_motor = pos;
+}
+void timeout_reset()
+{
+  sys_state.timeout = millis() + TIMEOUT_PERIOD; //TODO change to timer
+}
+
 void process_short_buffer(uint8_t* data)
 {
   switch (data[1])
   {
-    case COMM_FW_VERSION:
-      Serial2.println("Got COMM_FW_VERSION");
+    case COMM_FW_VERSION: //TODO add other COMM packets.
+      // Serial2.println("Got COMM_FW_VERSION");
       send_fw_packets();
   }
 }
 
 void send_fw_packets()
 {
-  // char fw_buff[100];
-  // int32_t fw_len = snprintf(fw_buff, sizeof(fw_buff), "%x%x%x%s%s%x%x%x%x", COMM_FW_VERSION, FW_VERSION_MAJOR, FW_VERSION_MINOR, "OmniDir\n", UUID, PAIRING_DONE, TEST_VERSION, 0,0);
-  // if (fw_len < 0) return;
-
-  // Serial2.println(fw_buff);
 
   int32_t ind = 0;
   uint8_t send_buffer[65];
@@ -382,7 +387,7 @@ void can_send_status_6(CAN_msg_t* msg, SysState* state)
   uint8_t buff[8];
   int32_t i = 0;
   bldc_buffer_append_int16(buff,0 * 1e1, &i);
-  bldc_buffer_append_int16(buff,(int16_t)(state->volt_can_pos*1e3), &i);
+  bldc_buffer_append_int16(buff,(int16_t)(state->volt_can_pos*1e3), &i); //TODO check multiplier
   bldc_buffer_append_int16(buff,0.0, &i);
   bldc_buffer_append_int16(buff,0.0, &i);
   memcpy(msg->data, buff, 8);
@@ -520,10 +525,10 @@ void update_sensors()
   sys_state.volt_can_pos = (3.3*((double)analogRead(PA1)/1023));
   sys_state.volts_in = (3.3*5.5454*((double)analogRead(PA4)/1023));
   sys_state.amps_motor = ((3.3*((double)analogRead(PA5)/1023))/0.2);
-  Serial2.println(sys_state.celcius_pcb);
-  Serial2.println(sys_state.volt_can_pos);
-  Serial2.println(sys_state.volts_in);
-  Serial2.println(sys_state.amps_motor);
+  // Serial2.println(sys_state.celcius_pcb);
+  // Serial2.println(sys_state.volt_can_pos);
+  // Serial2.println(sys_state.volts_in);
+  // Serial2.println(sys_state.amps_motor);
 }
 
 double convertRawAngleToDegrees(word newAngle)

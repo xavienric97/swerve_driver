@@ -13,6 +13,11 @@ HardwareSerial Serial2(PA3, PA2);
 #define UPDATE_SENSORS_PERIOD 100
 #define BLINK_PERIOD 500
 #define TIMEOUT_PERIOD 1000
+
+#define UPDATE_ENCODER_PERIOD 1
+#define UPDATE_VEL_POS_SP_PERIOD 20
+#define CONTROL_CORRECTION_PERIOD 2
+
 #define DEV_ID 54 // TODO change to UUID hash
 #define FW_VERSION_MAJOR 1
 #define FW_VERSION_MINOR 0
@@ -62,11 +67,9 @@ double convertRawAngleToDegrees(word);
 
 //Variables
 void entrada();
-float time_0, timer_diff=0, rpm_timer, velocity, jumpsito, premillis, angular_vel;
-double pos_travel, pos_sp, pos_diff, first_pos, angle_pos, Previous_Angle;
-int i=0, jump;
-bool test = false;
-uint32_t curr_millis, can_update_millis, update_sensors_millis, blink_millis;
+float angular_vel;
+double pos_travel, pos_sp, vel_sp, pos_diff, first_pos, angle_pos, Previous_Angle;
+uint32_t curr_millis, can_update_millis, update_sensors_millis, blink_millis, update_encoder_millis, update_vel_pos_sp_millis, control_correction_millis, elapsed_millis, last_millis;
 bool flag_can_rx;
 
 void can_send_status_1(CAN_msg_t* msg, SysState* state);
@@ -103,8 +106,11 @@ void set_pid_speed(float speed);
 void set_pid_pos(float pos);
 void timeout_reset();
 
+void update_encoder();
+void update_vel_pos_sp();
 void position_correction(double Current_Angle);
-void velocity_control(double Current_Angle);
+void velocity_control(double Current_Angle, uint32_t time_passed);
+void orientation_movement(float pwm_val);
 float pos_error, vel_error, vel_cmd, val, posKP=20, velKP=10, velKI=0.03, ki_ev=0;
 void canISR();
 
@@ -150,12 +156,27 @@ void loop()
     update_sensors();
   }
 
-  // if (curr_millis > read_encoder_millis)
-  // {
-  //   read_encoder_millis = curr_millis + READ_ENCODER_PERIOD;
-  //   read_encoder();
-  // }
+  if (curr_millis > update_encoder_millis)
+  {
+    update_encoder_millis = curr_millis + UPDATE_ENCODER_PERIOD;
+    update_encoder();
+  }
 
+  if (curr_millis > update_vel_pos_sp_millis)
+  {
+    update_vel_pos_sp_millis = curr_millis + UPDATE_VEL_POS_SP_PERIOD;
+    update_vel_pos_sp();
+  }
+
+  if (curr_millis > control_correction_millis)
+  {
+    control_correction_millis = curr_millis + CONTROL_CORRECTION_PERIOD;
+    elapsed_millis = curr_millis - last_millis;
+    last_millis = curr_millis;
+    position_correction(angle_pos);
+    velocity_control(angle_pos, elapsed_millis);
+    void orientation_movement(float pwm_val);
+  }
 
   if (curr_millis > blink_millis)
   {
@@ -413,111 +434,72 @@ void can_send_status_msgs()
   can_send_status_6(&CAN_TX_msg, &sys_state);
 }
 
-void entrada()
-{
-  if (!test)
-  {
-    time_0 = millis();
-    rpm_timer = millis();
-    premillis = millis();
-    test = true;
-  }
+///////////////////////////////////////////////////////////////////////////////////////////////////////
 
-  jump = (millis()-rpm_timer);
-  timer_diff = (millis()-time_0);
-  if (timer_diff > 0 && timer_diff <= 1322) //Tiempo que dura el moviemiento
-  {
-    if (jump >= 20)
-    {
-      if (first_pos > 270)
-      {
-        velocity = entradas[0][i+1]*-1;
-        pos_travel -= entradas[1][i+1];
-        pos_sp = pos_travel + first_pos;
-      }
-      else
-      {
-        velocity = entradas[0][i+1];
-        pos_travel += entradas[1][i+1];
-        pos_sp = pos_travel + first_pos;
-      }
-      i = i+1;
-      rpm_timer = millis();
-      Serial2.print(timer_diff/1000, 3);
-      // Serial2.print(" pos_sp: ");
-      // Serial2.print(pos_sp);
-      Serial2.print(" angle: ");
-      Serial2.print(angle_pos);
-      // Serial2.print(" | vel_sp: ");
-      // Serial2.print(velocity);
-      Serial2.print(" rpm: ");
-      Serial2.print(angular_vel);
-      Serial2.print(" ");
-      Serial2.println(val);
-    }
-    angle_pos = convertRawAngleToDegrees(ams5600.getRawAngle());
-    position_correction(angle_pos);
-  }
-  else if (timer_diff > 1322 && timer_diff < 1800)
-  {
-    analogWrite(PB8, 1);
-    analogWrite(PB9, 1);
-    angle_pos = convertRawAngleToDegrees(ams5600.getRawAngle());
-    Serial2.println(angle_pos);
-  }
-  else if (timer_diff > 1800)
-  {
-    analogWrite(PB8, 1);
-    analogWrite(PB9, 1);
-  }
+void update_encoder()
+{
+  angle_pos = convertRawAngleToDegrees(ams5600.getRawAngle());
+}
+
+void update_vel_pos_sp()
+{
+  pos_sp = sys_state.pos_motor;
+  vel_sp = sys_state.rpm_motor;
 }
 
 void position_correction(double Current_Angle)
 {
   pos_error = pos_sp - Current_Angle; //// Position error
-  vel_cmd = pos_error*posKP+velocity;
-  velocity_control(Current_Angle);
+  vel_cmd = pos_error*posKP+vel_sp;
 }
 
-void velocity_control(double Current_Angle)
+void velocity_control(double Current_Angle, uint32_t time_passed)
 {
-  jumpsito = millis()-premillis;
-  if (jumpsito >= 2)
+  pos_diff = Current_Angle - Previous_Angle;
+  Previous_Angle = Current_Angle;
+  angular_vel = (pos_diff/(time_passed))*1000/6; ///// VELOCITY FEEDBACK
+  vel_error = vel_cmd - angular_vel; ///// Velocity error
+  ki_ev = vel_error*velKI+ki_ev;
+  val = vel_error*velKP + ki_ev; ///// Valor PWM
+
+  if (val  > 0)
   {
-    pos_diff = Current_Angle - Previous_Angle;
-    premillis = millis();
-    Previous_Angle = Current_Angle;
-    angular_vel = (pos_diff/(jumpsito))*1000/6; ///// VELOCITY FEEDBACK
-    vel_error = vel_cmd - angular_vel; ///// Velocity error
-    ki_ev = vel_error*velKI+ki_ev;
-    val = vel_error*velKP + ki_ev; ///// Valor PWM
-
-    if (val  > 0)
+    val = val + dead_zone_up;
+    if(val > max_up)
     {
-      val = val + dead_zone_up;
-      if(val > max_up)
-      {
-        val = max_up;
-        ki_ev = 0;
-      }
-
-      analogWrite(PB9, 0);
-      analogWrite(PB8, val);
+      val = max_up;
+      ki_ev = 0;
     }
-    else
+  }
+
+  else
+  {
+    val = val-dead_zone_down;
+    if(val < max_down)
     {
-      val = val-dead_zone_down;
-      if(val < max_down)
-      {
-        val = max_down;
-        ki_ev = 0;
-      }
-      val = val*-1;
-      analogWrite(PB8, 0);
-      analogWrite(PB9, val);
-    }    
+      val = max_down;
+      ki_ev = 0;
+    }
+  }    
+}
+
+void orientation_movement(float pwm_val)
+{
+  if (pwm_val  > 0)
+  {
+    analogWrite(PB9, 0);
+    analogWrite(PB8, pwm_val);
+  }
+
+   else
+  {
+    pwm_val = pwm_val*-1;
+    analogWrite(PB8, 0);
+    analogWrite(PB9, pwm_val);
   }
 }
+
+////////////////////////////////////////////////////////////////////////////////////////////
 
 void update_sensors()
 {

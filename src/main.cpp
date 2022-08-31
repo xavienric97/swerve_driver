@@ -3,6 +3,8 @@
 #include "datatypes.h"
 #include "entradas.h"
 #include <AS5600.h>
+#include <HardwareSerial.h>
+#include <Wire.h>
 #include "crc.h"
 
 AMS_5600 ams5600;
@@ -112,15 +114,24 @@ void position_correction(double Current_Angle);
 void velocity_control(double Current_Angle, uint32_t time_passed);
 void orientation_movement(float pwm_val);
 float pos_error, vel_error, vel_cmd, val, posKP=20, velKP=10, velKI=0.03, ki_ev=0;
+int i=0;
 void canISR();
 
 
 void setup() 
 {
   Serial2.begin(115200);
+  Wire.begin();
   pinMode(PC13, OUTPUT);
+  pinMode(PB8, OUTPUT); //Pins para el ouput PWM del motor
+  pinMode(PB9, OUTPUT); //^^^
+  analogWriteResolution(10); //Resolucion de 1023
   digitalWrite(PC13, LOW);
   Serial2.println("Started!");
+
+  angle_pos = convertRawAngleToDegrees(ams5600.getRawAngle());
+  Previous_Angle = angle_pos;
+  first_pos = angle_pos;
  
   bool ret = CANInit(CAN_500KBPS, 0);  // CAN_RX mapped to PA11, CAN_TX mapped to PA12
   
@@ -175,7 +186,7 @@ void loop()
     last_millis = curr_millis;
     position_correction(angle_pos);
     velocity_control(angle_pos, elapsed_millis);
-    void orientation_movement(float pwm_val);
+    orientation_movement(val);
   }
 
   if (curr_millis > blink_millis)
@@ -443,6 +454,18 @@ void update_encoder()
 
 void update_vel_pos_sp()
 {
+  // pos_travel += entradas[1][i+1];
+  // pos_sp = pos_travel + first_pos;
+  // vel_sp = entradas[0][i+1];
+  // i = i + 1;
+  // Serial2.print("time: ");
+  // Serial2.print(curr_millis);
+  // Serial2.print(" angle: ");
+  // Serial2.print(angle_pos);
+  // Serial2.print(" vel: ");
+  // Serial2.print(angular_vel);
+  // Serial2.print(" pwm: ");
+  // Serial2.println(val);
   pos_sp = sys_state.pos_motor;
   vel_sp = sys_state.rpm_motor;
 }
@@ -480,11 +503,13 @@ void velocity_control(double Current_Angle, uint32_t time_passed)
       val = max_down;
       ki_ev = 0;
     }
-  }    
+  }
+
 }
 
 void orientation_movement(float pwm_val)
 {
+
   if (pwm_val  > 0)
   {
     analogWrite(PB9, 0);
@@ -497,6 +522,14 @@ void orientation_movement(float pwm_val)
     analogWrite(PB8, 0);
     analogWrite(PB9, pwm_val);
   }
+}
+
+double convertRawAngleToDegrees(word newAngle)
+{
+  if (newAngle == 0xFFFF) return 0xFFFF;
+  /* Raw data reports 0 - 4095 segments, which is 0.087 of a degree */
+  float retVal = newAngle * 0.087890625;
+  return retVal;
 }
 
 ////////////////////////////////////////////////////////////////////////////////////////////
@@ -513,13 +546,7 @@ void update_sensors()
   // Serial2.println(sys_state.amps_motor);
 }
 
-double convertRawAngleToDegrees(word newAngle)
-{
-  if (newAngle == 0xFFFF) return 0xFFFF;
-  /* Raw data reports 0 - 4095 segments, which is 0.087 of a degree */
-  float retVal = newAngle * 0.087890625;
-  return retVal;
-}
+
 
 void bldc_buffer_append_int16(uint8_t* buffer, int16_t number, int32_t *index)
 {

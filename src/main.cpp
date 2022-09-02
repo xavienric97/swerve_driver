@@ -458,9 +458,7 @@ void update_vel_pos_sp()
   // pos_sp = pos_travel + first_pos;
   // vel_sp = entradas[0][i+1];
   // i = i + 1;
-<<<<<<< HEAD
 
-=======
   // Serial2.print("time: ");
   // Serial2.print(curr_millis);
   // Serial2.print(" angle: ");
@@ -469,7 +467,7 @@ void update_vel_pos_sp()
   // Serial2.print(angular_vel);
   // Serial2.print(" pwm: ");
   // Serial2.println(val);
->>>>>>> c1bbc7e8ff0a0c76b16f9e42e67aae1e79096954
+
   pos_sp = sys_state.pos_motor;
   vel_sp = sys_state.rpm_motor;
 

@@ -114,6 +114,7 @@ void position_correction(double Current_Angle);
 void velocity_control(double Current_Angle, uint32_t time_passed);
 void orientation_movement(float pwm_val);
 float pos_error, vel_error, vel_cmd, val, posKP=20, velKP=10, velKI=0.03, ki_ev=0;
+int i=0;
 void canISR();
 
 
@@ -457,7 +458,18 @@ void update_vel_pos_sp()
   // pos_sp = pos_travel + first_pos;
   // vel_sp = entradas[0][i+1];
   // i = i + 1;
+<<<<<<< HEAD
 
+=======
+  // Serial2.print("time: ");
+  // Serial2.print(curr_millis);
+  // Serial2.print(" angle: ");
+  // Serial2.print(angle_pos);
+  // Serial2.print(" vel: ");
+  // Serial2.print(angular_vel);
+  // Serial2.print(" pwm: ");
+  // Serial2.println(val);
+>>>>>>> c1bbc7e8ff0a0c76b16f9e42e67aae1e79096954
   pos_sp = sys_state.pos_motor;
   vel_sp = sys_state.rpm_motor;
 
